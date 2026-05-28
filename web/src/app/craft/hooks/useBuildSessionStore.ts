@@ -2000,12 +2000,18 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const newTab: PanelTab = { kind: "subagent", subagentSessionId };
       const tabId = panelTabId(newTab);
 
-      const existingTab = session.panelTabs.find(
-        (t) => panelTabId(t) === tabId
+      // Only ever one subagent tab — clicking a different subagent overwrites
+      // it in place rather than opening a second tab.
+      const existingIdx = session.panelTabs.findIndex(
+        (t) => t.kind === "subagent"
       );
-      const panelTabs = existingTab
-        ? session.panelTabs
-        : [...session.panelTabs, newTab];
+      let panelTabs: PanelTab[];
+      if (existingIdx === -1) {
+        panelTabs = [...session.panelTabs, newTab];
+      } else {
+        panelTabs = [...session.panelTabs];
+        panelTabs[existingIdx] = newTab;
+      }
 
       const { tabHistory } = session;
       const newEntry: TabHistoryEntry = { type: "panel-tab", tabId };
