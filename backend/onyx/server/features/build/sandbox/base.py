@@ -355,6 +355,26 @@ class SandboxManager(_ServeMixin, ABC):
             on_opencode_session_resolved=on_opencode_session_resolved,
         )
 
+    def send_subagent_message(
+        self,
+        sandbox_id: UUID,
+        parent_session_id: UUID,
+        subagent_opencode_session_id: str,
+        message: str,
+    ) -> Generator[SandboxEvent, None, None]:
+        """Stream a follow-up turn against an existing subagent (child)
+        opencode session that was spawned under ``parent_session_id``.
+
+        The child session shares the parent's session directory; opencode
+        uses the child session's own default model (no override).
+        """
+        yield from self.send_subagent_message_via_serve(
+            sandbox_id,
+            parent_session_id,
+            subagent_opencode_session_id,
+            message,
+        )
+
     @abstractmethod
     def list_directory(
         self, sandbox_id: UUID, session_id: UUID, path: str

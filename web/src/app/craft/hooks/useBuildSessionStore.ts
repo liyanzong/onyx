@@ -24,6 +24,7 @@ import {
   panelTabId,
   type SubagentState,
   type SubagentStatus,
+  type SubagentTurn,
 } from "@/app/craft/types/displayTypes";
 
 import {
@@ -173,6 +174,10 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
  * Child events may arrive before OR after the parent task event that names
  * them, so identifying fields are backfilled without clobbering known values.
  */
+function emptyTurn(prompt = ""): SubagentTurn {
+  return { prompt, toolCalls: [], response: null };
+}
+
 function buildSubagentsFromMessages(
   messages: BuildMessage[]
 ): Map<string, SubagentState> {
@@ -186,15 +191,29 @@ function buildSubagentsFromMessages(
       parentToolCallId: "",
       subagentType: null,
       name: "",
-      prompt: "",
-      response: null,
       status: "running",
-      toolCalls: [],
+      turns: [emptyTurn()],
       startedAt: Date.now(),
       completedAt: null,
     };
     subagents.set(subagentSessionId, created);
     return created;
+  }
+
+  /** Upsert a tool call into the last turn (best-effort for follow-ups). */
+  function appendToolCallToLastTurn(
+    sa: SubagentState,
+    toolCall: ToolCallState
+  ): SubagentTurn[] {
+    const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+    const last = turns[turns.length - 1] ?? emptyTurn();
+    const idx = last.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+    const toolCalls =
+      idx >= 0
+        ? last.toolCalls.map((tc, i) => (i === idx ? toolCall : tc))
+        : [...last.toolCalls, toolCall];
+    turns[turns.length - 1] = { ...last, toolCalls };
+    return turns;
   }
 
   for (const message of messages) {
@@ -203,6 +222,29 @@ function buildSubagentsFromMessages(
     if (!metadata || typeof metadata !== "object") continue;
 
     const packet = parsePacket(metadata);
+
+    // Best-effort follow-up response reconstruction: a child agent_message
+    // (tagged with _meta.parentSessionId) carries a follow-up turn's response.
+    // Follow-up turns do not persist their prompt, so this is the only signal.
+    if (packet.type === "text_chunk") {
+      const meta = (metadata as Record<string, unknown>)._meta as
+        | Record<string, unknown>
+        | undefined;
+      const childSessionId = meta?.sessionId as string | undefined;
+      const parentSessionId = meta?.parentSessionId as string | undefined;
+      if (childSessionId && parentSessionId && packet.text) {
+        const sa = ensure(childSessionId);
+        const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+        const last = turns[turns.length - 1] ?? emptyTurn();
+        turns[turns.length - 1] = {
+          ...last,
+          response: (last.response ?? "") + packet.text,
+        };
+        subagents.set(childSessionId, { ...sa, turns });
+      }
+      continue;
+    }
+
     if (packet.type !== "tool_call_progress") continue;
 
     const cls = classifySubagentEvent(packet);
@@ -210,12 +252,10 @@ function buildSubagentsFromMessages(
     if (cls.kind === "child") {
       const sa = ensure(cls.subagentSessionId);
       const toolCall = toolCallStateFromProgress(packet);
-      const idx = sa.toolCalls.findIndex((tc) => tc.id === toolCall.id);
-      const toolCalls =
-        idx >= 0
-          ? sa.toolCalls.map((tc, i) => (i === idx ? toolCall : tc))
-          : [...sa.toolCalls, toolCall];
-      subagents.set(cls.subagentSessionId, { ...sa, toolCalls });
+      subagents.set(cls.subagentSessionId, {
+        ...sa,
+        turns: appendToolCallToLastTurn(sa, toolCall),
+      });
     } else if (cls.kind === "parentTask") {
       const sa = ensure(cls.subagentSessionId);
       const status: SubagentStatus =
@@ -224,16 +264,25 @@ function buildSubagentsFromMessages(
           : packet.status === "failed" || packet.status === "cancelled"
             ? "failed"
             : "running";
+      // The parent task event drives the INITIAL turn's prompt + response.
+      const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+      const firstTurn = turns[0] ?? emptyTurn();
       const response =
-        status === "running" ? sa.response : cleanTaskOutput(packet.taskOutput);
+        status === "running"
+          ? firstTurn.response
+          : (firstTurn.response ?? cleanTaskOutput(packet.taskOutput));
+      turns[0] = {
+        ...firstTurn,
+        prompt: firstTurn.prompt || packet.command,
+        response,
+      };
       subagents.set(cls.subagentSessionId, {
         ...sa,
         parentToolCallId: sa.parentToolCallId || packet.toolCallId,
         subagentType: sa.subagentType ?? packet.subagentType,
         name: sa.name || subagentNameFromTask(packet),
-        prompt: sa.prompt || packet.command,
-        response: sa.response ?? response,
         status,
+        turns,
         completedAt: status === "running" ? sa.completedAt : Date.now(),
       });
     }
@@ -591,12 +640,30 @@ interface BuildSessionStore {
     name: string,
     prompt: string
   ) => void;
-  /** Mark a subagent as completed (or failed), optionally with its response. */
+  /**
+   * Mark a subagent as completed (or failed), optionally with its response.
+   * When a response is provided, it is set on the LAST turn.
+   */
   markSubagentComplete: (
     sessionId: string,
     subagentSessionId: string,
     status: SubagentStatus,
     response?: string | null
+  ) => void;
+  /**
+   * Start a new follow-up turn: push a fresh turn with the given prompt and
+   * set the subagent's status back to "running".
+   */
+  startSubagentFollowupTurn: (
+    sessionId: string,
+    subagentSessionId: string,
+    prompt: string
+  ) => void;
+  /** Append streamed response text to the LAST turn's response. */
+  appendSubagentResponseChunk: (
+    sessionId: string,
+    subagentSessionId: string,
+    text: string
   ) => void;
 
   // Tab Navigation History Actions
@@ -2070,19 +2137,21 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId,
         subagentType,
         name,
-        prompt: "",
-        response: null,
         status: "running",
-        toolCalls: [],
+        turns: [emptyTurn()],
         startedAt: Date.now(),
         completedAt: null,
       };
 
-      const tcIndex = base.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+      // Upsert the tool call into the LAST turn (by id).
+      const turns = base.turns.length > 0 ? [...base.turns] : [emptyTurn()];
+      const last = turns[turns.length - 1] ?? emptyTurn();
+      const tcIndex = last.toolCalls.findIndex((tc) => tc.id === toolCall.id);
       const toolCalls =
         tcIndex >= 0
-          ? base.toolCalls.map((tc, i) => (i === tcIndex ? toolCall : tc))
-          : [...base.toolCalls, toolCall];
+          ? last.toolCalls.map((tc, i) => (i === tcIndex ? toolCall : tc))
+          : [...last.toolCalls, toolCall];
+      turns[turns.length - 1] = { ...last, toolCalls };
 
       const updatedSubagent: SubagentState = {
         ...base,
@@ -2090,7 +2159,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId: base.parentToolCallId || parentToolCallId,
         subagentType: base.subagentType ?? subagentType,
         name: base.name || name,
-        toolCalls,
+        turns,
       };
 
       const subagents = new Map(session.subagents);
@@ -2125,13 +2194,17 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId,
         subagentType,
         name,
-        prompt,
-        response: null,
         status: "running",
-        toolCalls: [],
+        turns: [emptyTurn(prompt)],
         startedAt: Date.now(),
         completedAt: null,
       };
+
+      // Ensure turns[0] exists; backfill its prompt without clobbering a
+      // non-empty existing prompt.
+      const turns = base.turns.length > 0 ? [...base.turns] : [emptyTurn()];
+      const firstTurn = turns[0] ?? emptyTurn();
+      turns[0] = { ...firstTurn, prompt: firstTurn.prompt || prompt };
 
       const updatedSubagent: SubagentState = {
         ...base,
@@ -2139,7 +2212,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId: base.parentToolCallId || parentToolCallId,
         subagentType: base.subagentType ?? subagentType,
         name: base.name || name,
-        prompt: base.prompt || prompt,
+        turns,
       };
 
       const subagents = new Map(session.subagents);
@@ -2169,13 +2242,86 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const existing = session.subagents.get(subagentSessionId);
       if (!existing) return state;
 
+      // When a response is provided, set it on the LAST turn.
+      let turns = existing.turns;
+      if (response !== undefined) {
+        turns = existing.turns.length > 0 ? [...existing.turns] : [emptyTurn()];
+        const last = turns[turns.length - 1] ?? emptyTurn();
+        turns[turns.length - 1] = { ...last, response };
+      }
+
       const subagents = new Map(session.subagents);
       subagents.set(subagentSessionId, {
         ...existing,
         status,
         completedAt: Date.now(),
-        ...(response !== undefined ? { response } : {}),
+        turns,
       });
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  startSubagentFollowupTurn: (
+    sessionId: string,
+    subagentSessionId: string,
+    prompt: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      if (!existing) return state;
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, {
+        ...existing,
+        status: "running",
+        completedAt: null,
+        turns: [...existing.turns, emptyTurn(prompt)],
+      });
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  appendSubagentResponseChunk: (
+    sessionId: string,
+    subagentSessionId: string,
+    text: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      if (!existing) return state;
+
+      const turns =
+        existing.turns.length > 0 ? [...existing.turns] : [emptyTurn()];
+      const last = turns[turns.length - 1] ?? emptyTurn();
+      turns[turns.length - 1] = {
+        ...last,
+        response: (last.response ?? "") + text,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, { ...existing, turns });
 
       const updatedSession: BuildSessionData = {
         ...session,

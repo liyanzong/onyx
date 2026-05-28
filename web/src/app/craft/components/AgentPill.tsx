@@ -25,7 +25,10 @@ export default function AgentPill({ subagent }: AgentPillProps) {
   });
   const isActive = activePanelTabId === tabId;
   const isRunning = subagent.status === "running";
-  const stepCount = subagent.toolCalls.length;
+  const stepCount = subagent.turns.reduce(
+    (sum, turn) => sum + turn.toolCalls.length,
+    0
+  );
 
   return (
     <button

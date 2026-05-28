@@ -28,7 +28,8 @@ export default function TaskBody({ toolCall }: ToolCardBodyProps) {
     ) ?? null;
 
   const label = subagent?.name || toolCall.description || "";
-  const stepCount = subagent?.toolCalls.length ?? 0;
+  const stepCount =
+    subagent?.turns.reduce((sum, turn) => sum + turn.toolCalls.length, 0) ?? 0;
 
   const statusLabel = subagent
     ? subagent.status === "running"

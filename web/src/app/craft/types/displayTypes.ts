@@ -137,6 +137,19 @@ export function panelTabId(tab: PanelTab): string {
 
 export type SubagentStatus = "running" | "done" | "failed";
 
+/**
+ * A single conversation turn with a subagent. The initial dispatch is `turns[0]`;
+ * each follow-up message the user sends appends a new turn.
+ */
+export interface SubagentTurn {
+  /** The prompt for this turn (empty until seeded). */
+  prompt: string;
+  /** Tool calls emitted by the subagent during this turn, keyed by ToolCallState.id. */
+  toolCalls: ToolCallState[];
+  /** The subagent's response for this turn (null until complete). */
+  response: string | null;
+}
+
 export interface SubagentState {
   /** Opencode session id of the child subagent. */
   sessionId: string;
@@ -146,13 +159,9 @@ export interface SubagentState {
   subagentType: string | null;
   /** Display name for the subagent. */
   name: string;
-  /** The prompt the parent passed to the subagent (empty until seeded). */
-  prompt: string;
-  /** The subagent's final response (null until complete). */
-  response: string | null;
   status: SubagentStatus;
-  /** Tool calls emitted by this subagent, keyed by ToolCallState.id. */
-  toolCalls: ToolCallState[];
+  /** Ordered conversation turns. The initial dispatch is `turns[0]`. */
+  turns: SubagentTurn[];
   startedAt: number;
   completedAt: number | null;
 }
