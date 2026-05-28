@@ -25,7 +25,6 @@ import {
 import { getFileIcon } from "@/lib/utils";
 import { cn } from "@opal/utils";
 import Text from "@/refresh-components/texts/Text";
-import { Tag } from "@opal/components";
 import {
   SvgGlobe,
   SvgHardDrive,
@@ -522,7 +521,6 @@ const BuildOutputPanel = memo(({ onClose, isOpen }: BuildOutputPanelProps) => {
                 case "subagent": {
                   const subagent = subagents.get(tab.subagentSessionId);
                   const name = subagent?.name || "subagent";
-                  const subagentType = subagent?.subagentType;
                   return (
                     <button
                       key={id}
@@ -546,22 +544,13 @@ const BuildOutputPanel = memo(({ onClose, isOpen }: BuildOutputPanelProps) => {
                           }}
                         />
                       )}
-                      {subagentType ? (
-                        <Tag
-                          icon={SvgBubbleText}
-                          title={subagentType}
-                          color="purple"
-                          size="sm"
-                        />
-                      ) : (
-                        <SvgBubbleText
-                          size={14}
-                          className={cn(
-                            "stroke-current shrink-0",
-                            isActive ? "stroke-text-04" : "stroke-text-03"
-                          )}
-                        />
-                      )}
+                      <SvgBubbleText
+                        size={14}
+                        className={cn(
+                          "stroke-current shrink-0",
+                          isActive ? "stroke-text-04" : "stroke-text-03"
+                        )}
+                      />
                       <Text className="truncate text-sm">{name}</Text>
                       <button
                         onClick={(e) => handlePanelTabClose(e, tab)}
@@ -600,21 +589,23 @@ const BuildOutputPanel = memo(({ onClose, isOpen }: BuildOutputPanelProps) => {
       {/* URL Bar - Chrome-style */}
       <UrlBar
         displayUrl={
-          isFilePreviewActive && activeFilePath
-            ? `sandbox://${activeFilePath}`
-            : activeOutputTab === "preview"
-              ? session
-                ? displayUrl || "Loading..."
-                : "no-active-sandbox://"
-              : activeOutputTab === "files"
+          activePanel?.kind === "subagent"
+            ? "subagents://"
+            : isFilePreviewActive && activeFilePath
+              ? `sandbox://${activeFilePath}`
+              : activeOutputTab === "preview"
                 ? session
-                  ? "sandbox://"
-                  : preProvisionedSessionId
-                    ? "pre-provisioned-sandbox://"
-                    : isPreProvisioning
-                      ? "provisioning-sandbox://..."
-                      : "no-sandbox://"
-                : "artifacts://"
+                  ? displayUrl || "Loading..."
+                  : "no-active-sandbox://"
+                : activeOutputTab === "files"
+                  ? session
+                    ? "sandbox://"
+                    : preProvisionedSessionId
+                      ? "pre-provisioned-sandbox://"
+                      : isPreProvisioning
+                        ? "provisioning-sandbox://..."
+                        : "no-sandbox://"
+                  : "artifacts://"
         }
         showNavigation={true}
         canGoBack={canGoBack}

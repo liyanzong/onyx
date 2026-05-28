@@ -44,6 +44,7 @@ import {
   classifySubagentEvent,
   toolCallStateFromProgress,
   subagentNameFromTask,
+  cleanTaskOutput,
 } from "@/app/craft/utils/subagentRouting";
 
 /**
@@ -66,6 +67,12 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
 
     const metadata = message.message_metadata;
     if (!metadata || typeof metadata !== "object") continue;
+
+    // The synthetic task-output message duplicates the subagent's final
+    // response; it lives in the subagent panel, never the main transcript.
+    if ((metadata as Record<string, unknown>).source === "task_output") {
+      continue;
+    }
 
     // SAME parsePacket — identical classification for both code paths
     const packet = parsePacket(metadata);
@@ -179,6 +186,8 @@ function buildSubagentsFromMessages(
       parentToolCallId: "",
       subagentType: null,
       name: "",
+      prompt: "",
+      response: null,
       status: "running",
       toolCalls: [],
       startedAt: Date.now(),
@@ -215,11 +224,15 @@ function buildSubagentsFromMessages(
           : packet.status === "failed" || packet.status === "cancelled"
             ? "failed"
             : "running";
+      const response =
+        status === "running" ? sa.response : cleanTaskOutput(packet.taskOutput);
       subagents.set(cls.subagentSessionId, {
         ...sa,
         parentToolCallId: sa.parentToolCallId || packet.toolCallId,
         subagentType: sa.subagentType ?? packet.subagentType,
         name: sa.name || subagentNameFromTask(packet),
+        prompt: sa.prompt || packet.command,
+        response: sa.response ?? response,
         status,
         completedAt: status === "running" ? sa.completedAt : Date.now(),
       });
@@ -575,13 +588,15 @@ interface BuildSessionStore {
     subagentSessionId: string,
     parentToolCallId: string,
     subagentType: string | null,
-    name: string
+    name: string,
+    prompt: string
   ) => void;
-  /** Mark a subagent as completed (or failed). */
+  /** Mark a subagent as completed (or failed), optionally with its response. */
   markSubagentComplete: (
     sessionId: string,
     subagentSessionId: string,
-    status: SubagentStatus
+    status: SubagentStatus,
+    response?: string | null
   ) => void;
 
   // Tab Navigation History Actions
@@ -2055,6 +2070,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId,
         subagentType,
         name,
+        prompt: "",
+        response: null,
         status: "running",
         toolCalls: [],
         startedAt: Date.now(),
@@ -2095,7 +2112,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
     subagentSessionId: string,
     parentToolCallId: string,
     subagentType: string | null,
-    name: string
+    name: string,
+    prompt: string
   ) => {
     set((state) => {
       const session = state.sessions.get(sessionId);
@@ -2107,6 +2125,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId,
         subagentType,
         name,
+        prompt,
+        response: null,
         status: "running",
         toolCalls: [],
         startedAt: Date.now(),
@@ -2119,6 +2139,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         parentToolCallId: base.parentToolCallId || parentToolCallId,
         subagentType: base.subagentType ?? subagentType,
         name: base.name || name,
+        prompt: base.prompt || prompt,
       };
 
       const subagents = new Map(session.subagents);
@@ -2138,7 +2159,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
   markSubagentComplete: (
     sessionId: string,
     subagentSessionId: string,
-    status: SubagentStatus
+    status: SubagentStatus,
+    response?: string | null
   ) => {
     set((state) => {
       const session = state.sessions.get(sessionId);
@@ -2152,6 +2174,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         ...existing,
         status,
         completedAt: Date.now(),
+        ...(response !== undefined ? { response } : {}),
       });
 
       const updatedSession: BuildSessionData = {

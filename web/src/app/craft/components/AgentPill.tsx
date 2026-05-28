@@ -1,6 +1,6 @@
 "use client";
 
-import { Text, Tag } from "@opal/components";
+import { Text } from "@opal/components";
 import { SvgBubbleText, SvgCheckCircle, SvgAlertTriangle } from "@opal/icons";
 import { cn } from "@opal/utils";
 import {
@@ -41,14 +41,7 @@ export default function AgentPill({ subagent }: AgentPillProps) {
           : "border-border-01 bg-background-neutral-00"
       )}
     >
-      {subagent.subagentType && (
-        <Tag
-          icon={SvgBubbleText}
-          title={subagent.subagentType}
-          color="purple"
-          size="sm"
-        />
-      )}
+      <SvgBubbleText className="w-3.5 h-3.5 stroke-text-03 shrink-0" />
 
       {subagent.name && (
         <span className="truncate max-w-[8rem]">

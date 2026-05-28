@@ -1,7 +1,8 @@
 "use client";
 
-import { Text, Tag } from "@opal/components";
+import { Text } from "@opal/components";
 import { SvgBubbleText } from "@opal/icons";
+import MinimalMarkdown from "@/components/chat/MinimalMarkdown";
 import { useSubagent } from "@/app/craft/hooks/useBuildSessionStore";
 import CraftToolCard from "@/app/craft/components/tool-cards/CraftToolCard";
 
@@ -35,14 +36,7 @@ export default function SubagentTab({ subagentSessionId }: SubagentTabProps) {
   return (
     <div className="flex h-full flex-col overflow-y-auto p-4">
       <div className="flex items-center gap-2 pb-3">
-        {subagent.subagentType && (
-          <Tag
-            icon={SvgBubbleText}
-            title={subagent.subagentType}
-            color="purple"
-            size="sm"
-          />
-        )}
+        <SvgBubbleText className="w-4 h-4 stroke-text-03 shrink-0" />
         {subagent.name && (
           <Text font="main-ui-action" color="text-04" nowrap>
             {subagent.name}
@@ -59,11 +53,38 @@ export default function SubagentTab({ subagentSessionId }: SubagentTabProps) {
         </span>
       </div>
 
+      {subagent.prompt && (
+        <div className="flex flex-col gap-1 pb-3">
+          <Text font="main-ui-muted" color="text-02">
+            Prompt
+          </Text>
+          <div className="max-h-[14rem] overflow-y-auto whitespace-pre-wrap break-words">
+            <Text as="p" font="secondary-body" color="text-04">
+              {subagent.prompt}
+            </Text>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1">
         {subagent.toolCalls.map((tc) => (
           <CraftToolCard key={tc.id} toolCall={tc} />
         ))}
       </div>
+
+      {subagent.response !== null && (
+        <div className="flex flex-col gap-1 pt-3">
+          <Text font="main-ui-muted" color="text-02">
+            Response
+          </Text>
+          <div className="max-h-[24rem] overflow-y-auto break-words">
+            <MinimalMarkdown
+              content={subagent.response}
+              className="text-text-05"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

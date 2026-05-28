@@ -1,6 +1,6 @@
 "use client";
 
-import { Text, Tag } from "@opal/components";
+import { Text } from "@opal/components";
 import { SvgBubbleText, SvgArrowRight } from "@opal/icons";
 import { cn } from "@opal/utils";
 import {
@@ -10,11 +10,11 @@ import {
 import type { ToolCardBodyProps } from "@/app/craft/components/tool-cards/interfaces";
 
 /**
- * TaskBody - Renderer for the task (subagent) tool.
+ * TaskBody - Compact launcher for the task (subagent) tool.
  *
- * Shows the subagent type badge, the prompt, and the final output. When the
- * spawned subagent is known, the whole body becomes a clickable surface that
- * opens the subagent's transcript in the side panel.
+ * Shows the subagent type badge, a one-line label, and the live run status.
+ * The subagent's prompt and response live in the side-panel transcript — when
+ * the spawned subagent is known, the whole card opens that transcript.
  */
 export default function TaskBody({ toolCall }: ToolCardBodyProps) {
   const subagents = useSubagents();
@@ -27,9 +27,7 @@ export default function TaskBody({ toolCall }: ToolCardBodyProps) {
       (s) => s.parentToolCallId === toolCall.id
     ) ?? null;
 
-  const subagentType = toolCall.subagentType;
-  const prompt = toolCall.command || toolCall.rawOutput;
-  const output = toolCall.taskOutput;
+  const label = subagent?.name || toolCall.description || "";
   const stepCount = subagent?.toolCalls.length ?? 0;
 
   const statusLabel = subagent
@@ -42,46 +40,19 @@ export default function TaskBody({ toolCall }: ToolCardBodyProps) {
 
   const content = (
     <>
-      {subagentType && (
-        <div className="flex items-center gap-2">
-          <Tag
-            icon={SvgBubbleText}
-            title={subagentType}
-            color="purple"
-            size="sm"
-          />
-          {statusLabel && (
-            <Text font="main-ui-muted" color="text-02">
-              {statusLabel}
-            </Text>
-          )}
-        </div>
-      )}
-
-      {prompt && (
-        <div>
-          <Text font="main-ui-muted" color="text-02">
-            Prompt
+      <div className="flex items-center gap-2">
+        <SvgBubbleText className="w-3.5 h-3.5 stroke-text-03 shrink-0" />
+        {label && (
+          <Text font="main-ui-action" color="text-04" nowrap>
+            {label}
           </Text>
-          <div className="mt-1 overflow-auto max-h-[14rem] whitespace-pre-wrap wrap-break-word">
-            <Text as="p" font="secondary-body" color="text-04">
-              {prompt}
-            </Text>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {output && (
-        <div>
-          <Text font="main-ui-muted" color="text-02">
-            Result
-          </Text>
-          <div className="mt-1 overflow-auto max-h-[20rem] whitespace-pre-wrap wrap-break-word">
-            <Text as="p" font="main-content-body" color="text-04">
-              {output}
-            </Text>
-          </div>
-        </div>
+      {statusLabel && (
+        <Text font="main-ui-muted" color="text-02">
+          {statusLabel}
+        </Text>
       )}
 
       {subagent && (
@@ -102,7 +73,7 @@ export default function TaskBody({ toolCall }: ToolCardBodyProps) {
         onClick={() => openSubagentInPanel(subagent.sessionId)}
         aria-label="View subagent transcript"
         className={cn(
-          "px-3 flex flex-col gap-3 w-full text-left rounded-08",
+          "px-3 py-1 flex flex-col gap-1 w-full text-left rounded-08",
           "transition-colors hover:bg-background-tint-01"
         )}
       >
@@ -111,5 +82,5 @@ export default function TaskBody({ toolCall }: ToolCardBodyProps) {
     );
   }
 
-  return <div className="px-3 flex flex-col gap-3">{content}</div>;
+  return <div className="px-3 py-1 flex flex-col gap-1">{content}</div>;
 }

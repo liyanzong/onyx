@@ -66,6 +66,37 @@ export function toolCallStateFromProgress(
   };
 }
 
+/**
+ * Clean a raw task-output string for display in the subagent panel.
+ *
+ * Raw output looks like:
+ *   task_id: ses_xxx (for resuming to continue this task if needed)
+ *
+ *   <task_result>
+ *   ...actual answer...
+ *   </task_result>
+ *
+ * Strips a leading `task_id: ...` line and unwraps a single
+ * `<task_result>...</task_result>` block if present. Returns the trimmed input
+ * when neither pattern matches. Null/empty input → null.
+ */
+export function cleanTaskOutput(raw: string | null): string | null {
+  if (!raw) return null;
+  let text = raw.trim();
+  if (!text) return null;
+
+  // Strip a leading "task_id: ..." line.
+  text = text.replace(/^task_id:[^\n]*\n?/, "").trim();
+
+  // Unwrap a single <task_result>...</task_result> block.
+  const match = text.match(/<task_result>([\s\S]*?)<\/task_result>/);
+  if (match?.[1] !== undefined) {
+    text = match[1].trim();
+  }
+
+  return text || null;
+}
+
 /** Derive a short subagent display name from a parsed parent `task` packet. */
 export function subagentNameFromTask(parsed: ParsedToolCallProgress): string {
   const firstLine = (parsed.command || "").split("\n")[0]?.trim() ?? "";

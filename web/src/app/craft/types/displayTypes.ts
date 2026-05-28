@@ -146,6 +146,10 @@ export interface SubagentState {
   subagentType: string | null;
   /** Display name for the subagent. */
   name: string;
+  /** The prompt the parent passed to the subagent (empty until seeded). */
+  prompt: string;
+  /** The subagent's final response (null until complete). */
+  response: string | null;
   status: SubagentStatus;
   /** Tool calls emitted by this subagent, keyed by ToolCallState.id. */
   toolCalls: ToolCallState[];

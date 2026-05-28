@@ -26,6 +26,7 @@ import {
   classifySubagentEvent,
   toolCallStateFromProgress,
   subagentNameFromTask,
+  cleanTaskOutput,
 } from "@/app/craft/utils/subagentRouting";
 
 /**
@@ -299,13 +300,15 @@ export function useBuildStreaming() {
                   subagentClass.subagentSessionId,
                   parsed.toolCallId,
                   parsed.subagentType,
-                  subagentNameFromTask(parsed)
+                  subagentNameFromTask(parsed),
+                  parsed.command
                 );
                 if (parsed.status === "completed") {
                   markSubagentComplete(
                     sessionId,
                     subagentClass.subagentSessionId,
-                    "done"
+                    "done",
+                    cleanTaskOutput(parsed.taskOutput)
                   );
                 } else if (
                   parsed.status === "failed" ||
@@ -314,7 +317,8 @@ export function useBuildStreaming() {
                   markSubagentComplete(
                     sessionId,
                     subagentClass.subagentSessionId,
-                    "failed"
+                    "failed",
+                    cleanTaskOutput(parsed.taskOutput)
                   );
                 }
                 // Fall through to the normal transcript dispatch below.
