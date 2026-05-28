@@ -31,6 +31,7 @@ import ScheduledRunBanner from "@/app/craft/components/ScheduledRunBanner";
 import BuildWelcome from "@/app/craft/components/BuildWelcome";
 import BuildMessageList from "@/app/craft/components/BuildMessageList";
 import LiveApprovalsRegion from "@/app/craft/components/approvals/LiveApprovalsRegion";
+import AgentStrip from "@/app/craft/components/AgentStrip";
 import SandboxStatusIndicator from "@/app/craft/components/SandboxStatusIndicator";
 import UpgradePlanModal from "@/app/craft/components/UpgradePlanModal";
 import IconButton from "@/refresh-components/buttons/IconButton";
@@ -447,6 +448,7 @@ export default function BuildChatPanel({
                   </Tooltip>
                 </div>
               )}
+              <AgentStrip />
               <InputBar
                 ref={inputBarRef}
                 onSubmit={handleSubmit}

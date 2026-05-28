@@ -1,0 +1,76 @@
+/**
+ * Subagent Routing
+ *
+ * Shared classification + mapping helpers for routing parsed tool-call packets
+ * into the main transcript vs. a subagent's own tool-call list. Used by both
+ * the live SSE path (useBuildStreaming) and the historical reconstruction path
+ * (useBuildSessionStore.loadSession) so the two never drift.
+ *
+ * Routing semantics (from the backend `_meta`):
+ * - Child (subagent-internal) event: parentSessionId != null AND sessionId != null.
+ *   Belongs to the subagent identified by `sessionId` — NOT the main transcript.
+ * - Parent `task` event: subagentSessionId != null. Stays in the main transcript
+ *   (the task card) AND seeds/updates the subagent meta for `subagentSessionId`.
+ * - Normal event: all three null → main transcript, unchanged.
+ */
+
+import type { ParsedToolCallProgress } from "./packetTypes";
+import type { ToolCallState } from "../types/displayTypes";
+
+export type SubagentEventClass =
+  | { kind: "child"; subagentSessionId: string }
+  | { kind: "parentTask"; subagentSessionId: string }
+  | { kind: "normal" };
+
+/**
+ * Classify a parsed tool-call progress packet for subagent routing.
+ *
+ * Child detection takes precedence: a packet with a non-null parentSessionId
+ * (and its own sessionId) is always a subagent-internal event.
+ */
+export function classifySubagentEvent(
+  parsed: ParsedToolCallProgress
+): SubagentEventClass {
+  if (parsed.parentSessionId !== null && parsed.sessionId !== null) {
+    return { kind: "child", subagentSessionId: parsed.sessionId };
+  }
+  if (parsed.subagentSessionId !== null) {
+    return { kind: "parentTask", subagentSessionId: parsed.subagentSessionId };
+  }
+  return { kind: "normal" };
+}
+
+/**
+ * Build a ToolCallState from a parsed tool-call progress packet — the SAME
+ * mapping used by the main transcript builder, so child tool calls render
+ * identically wherever they appear.
+ */
+export function toolCallStateFromProgress(
+  parsed: ParsedToolCallProgress
+): ToolCallState {
+  return {
+    id: parsed.toolCallId,
+    kind: parsed.kind,
+    title: parsed.title,
+    description: parsed.description,
+    command: parsed.command,
+    status: parsed.status,
+    rawOutput: parsed.rawOutput,
+    toolName: parsed.toolName,
+    subagentType: parsed.subagentType ?? undefined,
+    skillName: parsed.skillName ?? undefined,
+    taskOutput: parsed.taskOutput ?? undefined,
+    isNewFile: parsed.isNewFile,
+    oldContent: parsed.oldContent,
+    newContent: parsed.newContent,
+  };
+}
+
+/** Derive a short subagent display name from a parsed parent `task` packet. */
+export function subagentNameFromTask(parsed: ParsedToolCallProgress): string {
+  const firstLine = (parsed.command || "").split("\n")[0]?.trim() ?? "";
+  if (firstLine) {
+    return firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
+  }
+  return parsed.subagentType ?? "subagent";
+}

@@ -22,6 +22,8 @@ import {
   TodoListState,
   type PanelTab,
   panelTabId,
+  type SubagentState,
+  type SubagentStatus,
 } from "@/app/craft/types/displayTypes";
 
 import {
@@ -38,6 +40,11 @@ import {
 
 import { genId } from "@/app/craft/utils/streamItemHelpers";
 import { parsePacket } from "@/app/craft/utils/parsePacket";
+import {
+  classifySubagentEvent,
+  toolCallStateFromProgress,
+  subagentNameFromTask,
+} from "@/app/craft/utils/subagentRouting";
 
 /**
  * Convert loaded messages (with message_metadata) to StreamItem[] format.
@@ -87,6 +94,11 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
         break;
 
       case "tool_call_progress":
+        // Child (subagent-internal) tool events do NOT belong in the main
+        // transcript — they are reconstructed into session.subagents instead.
+        if (classifySubagentEvent(packet).kind === "child") {
+          break;
+        }
         if (packet.isTodo) {
           // Upsert: update existing todo_list or create new one
           const existingIdx = items.findIndex(
@@ -141,6 +153,80 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
   }
 
   return items;
+}
+
+/**
+ * Reconstruct the subagents Map from persisted messages.
+ *
+ * Applies the SAME classification as the live SSE path:
+ * - child events  → append toolCalls keyed by the child session id
+ * - parent task   → seed meta (parentToolCallId, subagentType, name) and set
+ *                   status from the task event's terminal status
+ *
+ * Child events may arrive before OR after the parent task event that names
+ * them, so identifying fields are backfilled without clobbering known values.
+ */
+function buildSubagentsFromMessages(
+  messages: BuildMessage[]
+): Map<string, SubagentState> {
+  const subagents = new Map<string, SubagentState>();
+
+  function ensure(subagentSessionId: string): SubagentState {
+    const existing = subagents.get(subagentSessionId);
+    if (existing) return existing;
+    const created: SubagentState = {
+      sessionId: subagentSessionId,
+      parentToolCallId: "",
+      subagentType: null,
+      name: "",
+      status: "running",
+      toolCalls: [],
+      startedAt: Date.now(),
+      completedAt: null,
+    };
+    subagents.set(subagentSessionId, created);
+    return created;
+  }
+
+  for (const message of messages) {
+    if (message.type === "user") continue;
+    const metadata = message.message_metadata;
+    if (!metadata || typeof metadata !== "object") continue;
+
+    const packet = parsePacket(metadata);
+    if (packet.type !== "tool_call_progress") continue;
+
+    const cls = classifySubagentEvent(packet);
+
+    if (cls.kind === "child") {
+      const sa = ensure(cls.subagentSessionId);
+      const toolCall = toolCallStateFromProgress(packet);
+      const idx = sa.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+      const toolCalls =
+        idx >= 0
+          ? sa.toolCalls.map((tc, i) => (i === idx ? toolCall : tc))
+          : [...sa.toolCalls, toolCall];
+      subagents.set(cls.subagentSessionId, { ...sa, toolCalls });
+    } else if (cls.kind === "parentTask") {
+      const sa = ensure(cls.subagentSessionId);
+      const status: SubagentStatus =
+        packet.status === "completed"
+          ? "done"
+          : packet.status === "failed" || packet.status === "cancelled"
+            ? "failed"
+            : "running";
+      subagents.set(cls.subagentSessionId, {
+        ...sa,
+        parentToolCallId: sa.parentToolCallId || packet.toolCallId,
+        subagentType: sa.subagentType ?? packet.subagentType,
+        name: sa.name || subagentNameFromTask(packet),
+        status,
+        completedAt: status === "running" ? sa.completedAt : Date.now(),
+      });
+    }
+  }
+
+  return subagents;
 }
 
 /**
@@ -310,6 +396,8 @@ export interface BuildSessionData {
   filesNeedsRefresh: number;
   /** Transient panel tabs open in this session (files, subagents, etc.) */
   panelTabs: PanelTab[];
+  /** Subagents spawned in this session, keyed by child opencode session id. */
+  subagents: Map<string, SubagentState>;
   /** Active pinned tab in output panel */
   activeOutputTab: OutputTabType;
   /** Active transient panel tab ID (when set, takes precedence over pinned tab) */
@@ -452,6 +540,8 @@ interface BuildSessionStore {
   /** Atomically open panel + create file tab + set active for a markdown file detected during streaming */
   openMarkdownPreview: (sessionId: string, filePath: string) => void;
   closeFilePreview: (sessionId: string, path: string) => void;
+  /** Generic: remove the panel tab whose panelTabId === tabId; clears active if it was active. */
+  closePanelTab: (sessionId: string, tabId: string) => void;
   setActiveOutputTab: (sessionId: string, tab: OutputTabType) => void;
   setActivePanelTabId: (sessionId: string, tabId: string | null) => void;
   /** Set active tab when no session exists (for pre-provisioned sandbox viewing) */
@@ -461,6 +551,37 @@ interface BuildSessionStore {
   updateFilesTabState: (
     sessionId: string,
     updates: Partial<FilesTabState>
+  ) => void;
+
+  // Subagent Actions
+  /** Open (or focus) a subagent transcript tab in the output panel. */
+  openSubagentInPanel: (subagentSessionId: string) => void;
+  /** Upsert a subagent + one of its tool calls (creates the subagent if absent). */
+  recordSubagentToolCall: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    toolCall: ToolCallState,
+    subagentType: string | null,
+    name: string
+  ) => void;
+  /**
+   * Seed/backfill a subagent's identifying meta from a parent `task` event.
+   * Creates the SubagentState if absent (status "running"); never clobbers
+   * already-known identifying fields.
+   */
+  seedSubagentMeta: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    subagentType: string | null,
+    name: string
+  ) => void;
+  /** Mark a subagent as completed (or failed). */
+  markSubagentComplete: (
+    sessionId: string,
+    subagentSessionId: string,
+    status: SubagentStatus
   ) => void;
 
   // Tab Navigation History Actions
@@ -492,6 +613,7 @@ const createInitialSessionData = (
   webappNeedsRefresh: 0,
   filesNeedsRefresh: 0,
   panelTabs: [],
+  subagents: new Map(),
   activeOutputTab: "preview",
   activePanelTabId: null,
   filesTabState: { expandedPaths: [], scrollTop: 0, directoryCache: {} },
@@ -1233,6 +1355,12 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         ? currentSession!.messages
         : consolidateMessagesIntoTurns(messages);
       const streamItems = isStreaming ? currentSession!.streamItems : [];
+      // Reconstruct subagents from the raw (un-consolidated) messages — they
+      // carry the per-packet _meta needed for classification. Preserve the
+      // live map if actively streaming.
+      const subagents = isStreaming
+        ? currentSession!.subagents
+        : buildSubagentsFromMessages(messages);
       const sandbox =
         needsRestore && sessionData.sandbox
           ? { ...sessionData.sandbox, status: "restoring" as const }
@@ -1242,6 +1370,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         status,
         messages: resolvedMessages,
         streamItems,
+        subagents,
         artifacts,
         webappUrl,
         sandbox,
@@ -1746,6 +1875,32 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
     });
   },
 
+  closePanelTab: (sessionId: string, tabId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const panelTabs = session.panelTabs.filter(
+        (t) => panelTabId(t) !== tabId
+      );
+
+      const wasActive = session.activePanelTabId === tabId;
+      const activePanelTabId = wasActive ? null : session.activePanelTabId;
+      const activeOutputTab = wasActive ? "files" : session.activeOutputTab;
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        panelTabs,
+        activePanelTabId,
+        activeOutputTab,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
   setActiveOutputTab: (sessionId: string, tab: OutputTabType) => {
     set((state) => {
       const session = state.sessions.get(sessionId);
@@ -1823,6 +1978,179 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const updatedSession: BuildSessionData = {
         ...session,
         filesTabState: { ...session.filesTabState, ...updates },
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  // ===========================================================================
+  // Subagent Actions
+  // ===========================================================================
+
+  openSubagentInPanel: (subagentSessionId: string) => {
+    set((state) => {
+      const sessionId = state.currentSessionId;
+      if (!sessionId) return state;
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const newTab: PanelTab = { kind: "subagent", subagentSessionId };
+      const tabId = panelTabId(newTab);
+
+      const existingTab = session.panelTabs.find(
+        (t) => panelTabId(t) === tabId
+      );
+      const panelTabs = existingTab
+        ? session.panelTabs
+        : [...session.panelTabs, newTab];
+
+      const { tabHistory } = session;
+      const newEntry: TabHistoryEntry = { type: "panel-tab", tabId };
+      const newEntries = [
+        ...tabHistory.entries.slice(0, tabHistory.currentIndex + 1),
+        newEntry,
+      ];
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        outputPanelOpen: true,
+        panelTabs,
+        activePanelTabId: tabId,
+        tabHistory: {
+          entries: newEntries,
+          currentIndex: newEntries.length - 1,
+        },
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  recordSubagentToolCall: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    toolCall: ToolCallState,
+    subagentType: string | null,
+    name: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      const base: SubagentState = existing ?? {
+        sessionId: subagentSessionId,
+        parentToolCallId,
+        subagentType,
+        name,
+        status: "running",
+        toolCalls: [],
+        startedAt: Date.now(),
+        completedAt: null,
+      };
+
+      const tcIndex = base.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+      const toolCalls =
+        tcIndex >= 0
+          ? base.toolCalls.map((tc, i) => (i === tcIndex ? toolCall : tc))
+          : [...base.toolCalls, toolCall];
+
+      const updatedSubagent: SubagentState = {
+        ...base,
+        // Backfill identifying fields if they arrive later.
+        parentToolCallId: base.parentToolCallId || parentToolCallId,
+        subagentType: base.subagentType ?? subagentType,
+        name: base.name || name,
+        toolCalls,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, updatedSubagent);
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  seedSubagentMeta: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    subagentType: string | null,
+    name: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      const base: SubagentState = existing ?? {
+        sessionId: subagentSessionId,
+        parentToolCallId,
+        subagentType,
+        name,
+        status: "running",
+        toolCalls: [],
+        startedAt: Date.now(),
+        completedAt: null,
+      };
+
+      const updatedSubagent: SubagentState = {
+        ...base,
+        // Seed/backfill identifying fields; never clobber known values.
+        parentToolCallId: base.parentToolCallId || parentToolCallId,
+        subagentType: base.subagentType ?? subagentType,
+        name: base.name || name,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, updatedSubagent);
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  markSubagentComplete: (
+    sessionId: string,
+    subagentSessionId: string,
+    status: SubagentStatus
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      if (!existing) return state;
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, {
+        ...existing,
+        status,
+        completedAt: Date.now(),
+      });
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
         lastAccessed: new Date(),
       };
       const newSessions = new Map(state.sessions);
@@ -1938,6 +2266,7 @@ const EMPTY_TAB_HISTORY: TabNavigationHistory = {
   entries: [],
   currentIndex: 0,
 };
+const EMPTY_SUBAGENTS: Map<string, SubagentState> = new Map();
 
 export const useCurrentSession = () =>
   useBuildSessionStore((state) => {
@@ -2101,4 +2430,24 @@ export const useTabHistory = () =>
     const { currentSessionId, sessions } = state;
     if (!currentSessionId) return EMPTY_TAB_HISTORY;
     return sessions.get(currentSessionId)?.tabHistory ?? EMPTY_TAB_HISTORY;
+  });
+
+// Subagent selectors
+export const useSubagents = () =>
+  useBuildSessionStore((state) => {
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return EMPTY_SUBAGENTS;
+    return sessions.get(currentSessionId)?.subagents ?? EMPTY_SUBAGENTS;
+  });
+
+export const useSubagent = (
+  subagentSessionId: string | null
+): SubagentState | null =>
+  useBuildSessionStore((state) => {
+    if (!subagentSessionId) return null;
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return null;
+    return (
+      sessions.get(currentSessionId)?.subagents.get(subagentSessionId) ?? null
+    );
   });

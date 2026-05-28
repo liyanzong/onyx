@@ -108,7 +108,9 @@ export type StreamItem =
  * Future view kinds: add a new variant here, render its chrome in
  * `OutputPanel.tsx`'s tab-row map, and its body in the panel body switch.
  */
-export type PanelTab = { kind: "file"; path: string; fileName: string };
+export type PanelTab =
+  | { kind: "file"; path: string; fileName: string }
+  | { kind: "subagent"; subagentSessionId: string };
 
 /**
  * Stable string ID for a `PanelTab`, namespaced by kind. Used as the value
@@ -120,9 +122,33 @@ export function panelTabId(tab: PanelTab): string {
   switch (tab.kind) {
     case "file":
       return `file:${tab.path}`;
+    case "subagent":
+      return `subagent:${tab.subagentSessionId}`;
     default: {
-      const _exhaustive: never = tab.kind;
+      const _exhaustive: never = tab;
       throw new Error(`Unknown PanelTab kind: ${String(_exhaustive)}`);
     }
   }
+}
+
+// =============================================================================
+// Subagent Types
+// =============================================================================
+
+export type SubagentStatus = "running" | "done" | "failed";
+
+export interface SubagentState {
+  /** Opencode session id of the child subagent. */
+  sessionId: string;
+  /** Tool call id of the parent `task` tool that spawned this subagent. */
+  parentToolCallId: string;
+  /** Subagent type (e.g. "explore", "plan"); null if unknown. */
+  subagentType: string | null;
+  /** Display name for the subagent. */
+  name: string;
+  status: SubagentStatus;
+  /** Tool calls emitted by this subagent, keyed by ToolCallState.id. */
+  toolCalls: ToolCallState[];
+  startedAt: number;
+  completedAt: number | null;
 }
