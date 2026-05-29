@@ -1533,7 +1533,14 @@ class KubernetesSandboxManager(SandboxManager):
         1. Create sessions/$session_id/ directory
         2. Copy outputs template from local templates (downloaded during init)
         3. Write AGENTS.md
-        4. Write opencode.json with LLM config
+        4. Write a per-session ``opencode.json`` that overrides the default
+           ``model`` for this session. The pod-wide ``opencode.json`` (the
+           ``OPENCODE_CONFIG_CONTENT`` secret written at provision time) defines
+           every provider + the system default model; this per-session file
+           sits in the session directory and, because opencode-serve scopes
+           config by ``?directory=``, overrides only the default model so that
+           the agent AND its subagents run on the model the user selected for
+           this session (not the provision-time system default).
         5. Start Next.js dev server (skipped when ``nextjs_port`` is None,
            e.g. for headless scheduled-task fires that don't need a preview).
 
@@ -1573,6 +1580,18 @@ class KubernetesSandboxManager(SandboxManager):
         )
 
         agent_instructions_escaped = agent_instructions.replace("'", "'\\''")
+
+        # Per-session opencode.json: overrides only the default model so this
+        # session's agent + its subagents run on the user-selected model rather
+        # than the provision-time system default baked into the pod-wide config.
+        # Providers/keys come from the pod-wide OPENCODE_CONFIG_CONTENT.
+        session_opencode_config = json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "model": f"{llm_config.provider}/{llm_config.model_name}",
+            }
+        )
+        session_opencode_config_escaped = session_opencode_config.replace("'", "'\\''")
 
         # Copy outputs template from baked-in location and install npm dependencies
         outputs_setup = f"""
@@ -1634,6 +1653,10 @@ echo "Linked user_library to /workspace/managed/user_library"
 # Write agent instructions
 echo "Writing AGENTS.md"
 printf '%s' '{agent_instructions_escaped}' > {session_path}/AGENTS.md
+
+# Write per-session opencode.json (overrides the default model for this session)
+echo "Writing opencode.json"
+printf '%s' '{session_opencode_config_escaped}' > {session_path}/opencode.json
 
 # Start Next.js dev server
 {nextjs_start_script}
@@ -2025,12 +2048,24 @@ echo "Session cleanup complete"
         )
 
         agent_instructions_escaped = agent_instructions.replace("'", "'\\''")
+
+        # Per-session opencode.json (model override) — mirrors
+        # setup_session_workspace so restored sessions keep running the
+        # user-selected model for the agent + its subagents.
+        session_opencode_config = json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "model": f"{llm_config.provider}/{llm_config.model_name}",
+            }
+        )
+        session_opencode_config_escaped = session_opencode_config.replace("'", "'\\''")
         config_script = f"""
 set -e
 mkdir -p {session_path}/.opencode
 ln -sfn /workspace/managed/skills {session_path}/.opencode/skills
 ln -sfn /workspace/managed/user_library {session_path}/user_library
 printf '%s' '{agent_instructions_escaped}' > {session_path}/AGENTS.md
+printf '%s' '{session_opencode_config_escaped}' > {session_path}/opencode.json
 """
 
         logger.info("Regenerating session configuration files")
