@@ -558,7 +558,10 @@ function parseToolCallProgress(
   }
 
   // ── Command (freeform → sanitizePathsInText) ──────────────────
-  const rawCommand = (ri?.command ?? "") as string;
+  // The task tool carries its subagent prompt in `prompt`, not `command`.
+  const rawCommand = (ri?.command ??
+    (toolName === "task" ? ri?.prompt : undefined) ??
+    "") as string;
   const command = sanitizePathsInText(rawCommand);
 
   // ── Description ───────────────────────────────────────────────
