@@ -1350,11 +1350,17 @@ class SessionManager:
 
             state = BuildStreamingState(turn_index=0)
 
+            # Use the parent session's model so the subagent follow-up runs on
+            # the same model as the parent (not the child session's default).
+            agent_provider, agent_model = self._get_session_agent_selection(session_id)
+
             for sandbox_event in self._sandbox_manager.send_subagent_message(
                 sandbox_id,
                 session_id,
                 subagent_opencode_session_id,
                 content,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             ):
                 # Keepalives + terminators pass through untagged.
                 if isinstance(sandbox_event, SSEKeepalive):

@@ -491,6 +491,8 @@ class _ServeMixin:
         parent_session_id: UUID,
         subagent_opencode_session_id: str,
         message: str,
+        agent_provider: str | None = None,
+        agent_model: str | None = None,
     ) -> Generator[SandboxEvent, None, None]:
         """Stream a follow-up turn against an existing subagent (child)
         opencode session.
@@ -498,9 +500,10 @@ class _ServeMixin:
         The child session runs in the SAME directory as its parent build
         session, so we anchor the serve client at the parent's session
         directory. Unlike :meth:`_send_message_via_serve` this does NOT call
-        ``ensure_session`` (the child id is supplied and already exists) and
-        passes ``model_provider``/``model_id`` as ``None`` so opencode uses
-        the child session's own default model.
+        ``ensure_session`` (the child id is supplied and already exists). It
+        passes the parent session's ``agent_provider``/``agent_model`` so the
+        follow-up uses the same model as the parent (not the child session's
+        own default).
         """
         packet_logger = get_packet_logger()
         session_path = self._session_directory(parent_session_id)
@@ -521,8 +524,8 @@ class _ServeMixin:
                     subagent_opencode_session_id,
                     message,
                     directory=session_path,
-                    model_provider=None,
-                    model_id=None,
+                    model_provider=agent_provider,
+                    model_id=agent_model,
                 ):
                     events_count += 1
                     yield event
